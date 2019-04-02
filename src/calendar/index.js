@@ -1,69 +1,39 @@
 import React, {Component} from 'react';
 import {
-  Text,
   View,
-  Dimensions,
-  Animated,
-  ViewPropTypes,
+  ViewPropTypes
 } from 'react-native';
 import PropTypes from 'prop-types';
+
 import XDate from 'xdate';
-
-import {parseDate, xdateToData} from '../interface';
 import dateutils from '../dateutils';
-import CalendarList from '../calendar-list';
-import ReservationsList from './reservation-list';
+import {xdateToData, parseDate} from '../interface';
 import styleConstructor from './style';
-import { VelocityTracker } from '../input';
-
-const HEADER_HEIGHT = 104;
-const KNOB_HEIGHT = 24;
+import Day from './day/basic';
+import UnitDay from './day/period';
+import MultiDotDay from './day/multi-dot';
+import MultiPeriodDay from './day/multi-period';
+import SingleDay from './day/custom';
+import CalendarHeader from './header';
+import shouldComponentUpdate from './updater';
+import {SELECT_DATE_SLOT} from '../testIDs';
 
 //Fallback when RN version is < 0.44
 const viewPropTypes = ViewPropTypes || View.propTypes;
 
-export default class AgendaView extends Component {
+const EmptyArray = [];
+
+class Calendar extends Component {
   static propTypes = {
     // Specify theme properties to override specific styles for calendar parts. Default = {}
     theme: PropTypes.object,
+    // Collection of dates that have to be marked. Default = {}
+    markedDates: PropTypes.object,
 
-    // agenda container style
+    // Specify style for calendar container element. Default = {}
     style: viewPropTypes.style,
-
-    // the list of items that have to be displayed in agenda. If you want to render item as empty date
-    // the value of date key has to be an empty array []. If there exists no value for date key it is
-    // considered that the date in question is not yet loaded
-    items: PropTypes.object,
-
-    // callback that gets called when items for a certain month should be loaded (month became visible)
-    loadItemsForMonth: PropTypes.func,
-    // callback that fires when the calendar is opened or closed
-    onCalendarToggled: PropTypes.func,
-    // callback that gets called on day press
-    onDayPress: PropTypes.func,
-    // callback that gets called when day changes while scrolling agenda list
-    onDaychange: PropTypes.func,
-    // specify how each item should be rendered in agenda
-    renderItem: PropTypes.func,
-    // specify how each date should be rendered. day can be undefined if the item is not first in that day.
-    renderDay: PropTypes.func,
-    // specify how agenda knob should look like
-    renderKnob: PropTypes.func,
-    // specify how empty date content with no items should be rendered
-    renderEmptyDay: PropTypes.func,
-    // specify what should be rendered instead of ActivityIndicator
-    renderEmptyData: PropTypes.func,
-    // specify your item comparison function for increased performance
-    rowHasChanged: PropTypes.func,
-
-    // Max amount of months allowed to scroll to the past. Default = 50
-    pastScrollRange: PropTypes.number,
-
-    // Max amount of months allowed to scroll to the future. Default = 50
-    futureScrollRange: PropTypes.number,
-
-    // initially selected day
-    selected: PropTypes.any,
+    // Initially visible month. Default = Date()
+    current: PropTypes.any,
     // Minimum date that can be selected, dates before minDate will be grayed out. Default = undefined
     minDate: PropTypes.any,
     // Maximum date that can be selected, dates after maxDate will be grayed out. Default = undefined
@@ -72,381 +42,239 @@ export default class AgendaView extends Component {
     // If firstDay=1 week starts from Monday. Note that dayNames and dayNamesShort should still start from Sunday.
     firstDay: PropTypes.number,
 
-    // Collection of dates that have to be marked. Default = items
-    markedDates: PropTypes.object,
-    // Optional marking type if custom markedDates are provided
+    // Date marking style [simple/period/multi-dot/multi-period]. Default = 'simple'
     markingType: PropTypes.string,
 
-    // Hide knob button. Default = false
-    hideKnob: PropTypes.bool,
-    // Month format in calendar title. Formatting values: http://arshaw.com/xdate/#Formatting
-    monthFormat: PropTypes.string,
-    // A RefreshControl component, used to provide pull-to-refresh functionality for the ScrollView.
-    refreshControl: PropTypes.element,
-    // If provided, a standard RefreshControl will be added for "Pull to Refresh" functionality. Make sure to also set the refreshing prop correctly.
-    onRefresh: PropTypes.func,
-    // Set this true while waiting for new data from a refresh.
-    refreshing: PropTypes.bool,
+    // Hide month navigation arrows. Default = false
+    hideArrows: PropTypes.bool,
     // Display loading indicador. Default = false
     displayLoadingIndicator: PropTypes.bool,
+    // Do not show days of other months in month page. Default = false
+    hideExtraDays: PropTypes.bool,
+
+    // Handler which gets executed on day press. Default = undefined
+    onDayPress: PropTypes.func,
+    // Handler which gets executed on day long press. Default = undefined
+    onDayLongPress: PropTypes.func,
+    // Handler which gets executed when visible month changes in calendar. Default = undefined
+    onMonthChange: PropTypes.func,
+    onVisibleMonthsChange: PropTypes.func,
+    // Replace default arrows with custom ones (direction can be 'left' or 'right')
+    renderArrow: PropTypes.func,
+    // Provide custom day rendering component
+    dayComponent: PropTypes.any,
+    // Month format in calendar title. Formatting values: http://arshaw.com/xdate/#Formatting
+    monthFormat: PropTypes.string,
+    // Disables changing month when click on days of other months (when hideExtraDays is false). Default = false
+    disableMonthChange: PropTypes.bool,
+    //  Hide day names. Default = false
+    hideDayNames: PropTypes.bool,
+    // Disable days by default. Default = false
+    disabledByDefault: PropTypes.bool,
+    // Show week numbers. Default = false
+    showWeekNumbers: PropTypes.bool,
+    // Handler which gets executed when press arrow icon left. It receive a callback can go back month
+    onPressArrowLeft: PropTypes.func,
+    // Handler which gets executed when press arrow icon left. It receive a callback can go next month
+    onPressArrowRight: PropTypes.func
   };
 
   constructor(props) {
     super(props);
-    this.styles = styleConstructor(props.theme);
-    const windowSize = Dimensions.get('window');
-    this.viewHeight = windowSize.height;
-    this.viewWidth = windowSize.width;
-    this.scrollTimeout = undefined;
-    this.headerState = 'idle';
-    this.state = {
-      scrollY: new Animated.Value(0),
-      calendarIsReady: false,
-      calendarScrollable: false,
-      firstResevationLoad: false,
-      selectedDay: parseDate(this.props.selected) || XDate(true),
-      topDay: parseDate(this.props.selected) || XDate(true),
-    };
-    this.currentMonth = this.state.selectedDay.clone();
-    this.onLayout = this.onLayout.bind(this);
-    this.onScrollPadLayout = this.onScrollPadLayout.bind(this);
-    this.onTouchStart = this.onTouchStart.bind(this);
-    this.onTouchEnd = this.onTouchEnd.bind(this);
-    this.onStartDrag = this.onStartDrag.bind(this);
-    this.onSnapAfterDrag = this.onSnapAfterDrag.bind(this);
-    this.generateMarkings = this.generateMarkings.bind(this);
-    this.knobTracker = new VelocityTracker();
-    this.state.scrollY.addListener(({value}) => this.knobTracker.add(value));
-  }
-
-  calendarOffset() {
-    return 90 - (this.viewHeight / 2);
-  }
-
-  initialScrollPadPosition() {
-    return Math.max(0, this.viewHeight - HEADER_HEIGHT);
-  }
-
-  setScrollPadPosition(y, animated) {
-    this.scrollPad._component.scrollTo({x: 0, y, animated});
-  }
-
-  onScrollPadLayout() {
-    // When user touches knob, the actual component that receives touch events is a ScrollView.
-    // It needs to be scrolled to the bottom, so that when user moves finger downwards,
-    // scroll position actually changes (it would stay at 0, when scrolled to the top).
-    this.setScrollPadPosition(this.initialScrollPadPosition(), false);
-    // delay rendering calendar in full height because otherwise it still flickers sometimes
-    setTimeout(() => this.setState({calendarIsReady: true}), 0);
-  }
-
-  onLayout(event) {
-    this.viewHeight = event.nativeEvent.layout.height;
-    this.viewWidth = event.nativeEvent.layout.width;
-    this.forceUpdate();
-  }
-
-  onTouchStart() {
-    this.headerState = 'touched';
-    if (this.knob) {
-      this.knob.setNativeProps({style: { opacity: 0.5 }});
-    }
-  }
-
-  onTouchEnd() {
-    if (this.knob) {
-      this.knob.setNativeProps({style: { opacity: 1 }});
-    }
-
-    if (this.headerState === 'touched') {
-      this.setScrollPadPosition(0, true);
-      this.enableCalendarScrolling();
-    }
-    this.headerState = 'idle';
-  }
-
-  onStartDrag() {
-    this.headerState = 'dragged';
-    this.knobTracker.reset();
-  }
-
-  onSnapAfterDrag(e) {
-    // on Android onTouchEnd is not called if dragging was started
-    this.onTouchEnd();
-    const currentY = e.nativeEvent.contentOffset.y;
-    this.knobTracker.add(currentY);
-    const projectedY = currentY + this.knobTracker.estimateSpeed() * 250/*ms*/;
-    const maxY = this.initialScrollPadPosition();
-    const snapY = (projectedY > maxY / 2) ? maxY : 0;
-    this.setScrollPadPosition(snapY, true);
-    if (snapY === 0) {
-      this.enableCalendarScrolling();
-    }
-  }
-
-  onVisibleMonthsChange(months) {
-    if (this.props.items && !this.state.firstResevationLoad) {
-      clearTimeout(this.scrollTimeout);
-      this.scrollTimeout = setTimeout(() => {
-        if (this.props.loadItemsForMonth && this._isMounted) {
-          this.props.loadItemsForMonth(months[0]);
-        }
-      }, 200);
-    }
-  }
-
-  loadReservations(props) {
-    if ((!props.items || !Object.keys(props.items).length) && !this.state.firstResevationLoad) {
-      this.setState({
-        firstResevationLoad: true
-      }, () => {
-        if (this.props.loadItemsForMonth) {
-          this.props.loadItemsForMonth(xdateToData(this.state.selectedDay));
-        }
-      });
-    }
-  }
-
-  componentWillMount() {
-    this._isMounted = true;
-    this.loadReservations(this.props);
-  }
-
-  componentWillUnmount() {
-    this._isMounted = false;
-  }
-
-  componentWillReceiveProps(props) {
-    if (props.items) {
-      this.setState({
-        firstResevationLoad: false
-      });
+    this.style = styleConstructor(this.props.theme);
+    let currentMonth;
+    if (props.current) {
+      currentMonth = parseDate(props.current);
     } else {
-      this.loadReservations(props);
+      currentMonth = XDate();
     }
+    this.state = {
+      currentMonth
+    };
+
+    this.updateMonth = this.updateMonth.bind(this);
+    this.addMonth = this.addMonth.bind(this);
+    this.pressDay = this.pressDay.bind(this);
+    this.longPressDay = this.longPressDay.bind(this);
+    this.shouldComponentUpdate = shouldComponentUpdate;
   }
 
-  enableCalendarScrolling() {
-    this.setState({
-      calendarScrollable: true
-    });
-    if (this.props.onCalendarToggled) {
-      this.props.onCalendarToggled(true);
-    }
-    // Enlarge calendarOffset here as a workaround on iOS to force repaint.
-    // Otherwise the month after current one or before current one remains invisible.
-    // The problem is caused by overflow: 'hidden' style, which we need for dragging
-    // to be performant.
-    // Another working solution for this bug would be to set removeClippedSubviews={false}
-    // in CalendarList listView, but that might impact performance when scrolling
-    // month list in expanded CalendarList.
-    // Further info https://github.com/facebook/react-native/issues/1831
-    this.calendar.scrollToDay(this.state.selectedDay, this.calendarOffset() + 1, true);
-  }
-
-  _chooseDayFromCalendar(d) {
-    this.chooseDay(d, !this.state.calendarScrollable);
-  }
-
-  chooseDay(d, optimisticScroll) {
-    const day = parseDate(d);
-    this.setState({
-      calendarScrollable: false,
-      selectedDay: day.clone()
-    });
-    if (this.props.onCalendarToggled) {
-      this.props.onCalendarToggled(false);
-    }
-    if (!optimisticScroll) {
+  componentWillReceiveProps(nextProps) {
+    const current= parseDate(nextProps.current);
+    if (current && current.toString('yyyy MM') !== this.state.currentMonth.toString('yyyy MM')) {
       this.setState({
-        topDay: day.clone()
+        currentMonth: current.clone()
       });
     }
-    this.setScrollPadPosition(this.initialScrollPadPosition(), true);
-    this.calendar.scrollToDay(day, this.calendarOffset(), true);
-    if (this.props.loadItemsForMonth) {
-      this.props.loadItemsForMonth(xdateToData(day));
+  }
+
+  updateMonth(day, doNotTriggerListeners) {
+    if (day.toString('yyyy MM') === this.state.currentMonth.toString('yyyy MM')) {
+      return;
     }
-    if (this.props.onDayPress) {
-      this.props.onDayPress(xdateToData(day));
+    this.setState({
+      currentMonth: day.clone()
+    }, () => {
+      if (!doNotTriggerListeners) {
+        const currMont = this.state.currentMonth.clone();
+        if (this.props.onMonthChange) {
+          this.props.onMonthChange(xdateToData(currMont));
+        }
+        if (this.props.onVisibleMonthsChange) {
+          this.props.onVisibleMonthsChange([xdateToData(currMont)]);
+        }
+      }
+    });
+  }
+
+  _handleDayInteraction(date, interaction) {
+    const day = parseDate(date);
+    const minDate = parseDate(this.props.minDate);
+    const maxDate = parseDate(this.props.maxDate);
+    if (!(minDate && !dateutils.isGTE(day, minDate)) && !(maxDate && !dateutils.isLTE(day, maxDate))) {
+      const shouldUpdateMonth = this.props.disableMonthChange === undefined || !this.props.disableMonthChange;
+      if (shouldUpdateMonth) {
+        this.updateMonth(day);
+      }
+      if (interaction) {
+        interaction(xdateToData(day));
+      }
     }
   }
 
-  renderReservations() {
+  pressDay(date) {
+    this._handleDayInteraction(date, this.props.onDayPress);
+  }
+
+  longPressDay(date) {
+    this._handleDayInteraction(date, this.props.onDayLongPress);
+  }
+
+  addMonth(count) {
+    this.updateMonth(this.state.currentMonth.clone().addMonths(count, true));
+  }
+
+  renderDay(day, id) {
+    const minDate = parseDate(this.props.minDate);
+    const maxDate = parseDate(this.props.maxDate);
+    let state = '';
+    if (this.props.disabledByDefault) {
+      state = 'disabled';
+    } else if ((minDate && !dateutils.isGTE(day, minDate)) || (maxDate && !dateutils.isLTE(day, maxDate))) {
+      state = 'disabled';
+    } else if (!dateutils.sameMonth(day, this.state.currentMonth)) {
+      state = 'disabled';
+    } else if (dateutils.sameDate(day, XDate())) {
+      state = 'today';
+    }
+
+    if (!dateutils.sameMonth(day, this.state.currentMonth) && this.props.hideExtraDays) {
+      return (<View key={id} style={{flex: 1}}/>);
+    }
+
+    const DayComp = this.getDayComponent();
+    const date = day.getDate();
+    const dateAsObject = xdateToData(day);
+
     return (
-        <ReservationsList
-            refreshControl={this.props.refreshControl}
-            refreshing={this.props.refreshing}
-            onRefresh={this.props.onRefresh}
-            rowHasChanged={this.props.rowHasChanged}
-            renderItem={this.props.renderItem}
-            renderDay={this.props.renderDay}
-            renderEmptyDate={this.props.renderEmptyDate}
-            reservations={this.props.items}
-            selectedDay={this.state.selectedDay}
-            renderEmptyData={this.props.renderEmptyData}
-            topDay={this.state.topDay}
-            onDayChange={this.onDayChange.bind(this)}
-            onScroll={() => {}}
-            ref={(c) => this.list = c}
-            theme={this.props.theme}
-        />
+      <View style={{flex: 1, alignItems: 'center'}} key={id}>
+        <DayComp
+          testID={`${SELECT_DATE_SLOT}-${dateAsObject.dateString}`}
+          state={state}
+          theme={this.props.theme}
+          onPress={this.pressDay}
+          onLongPress={this.longPressDay}
+          date={dateAsObject}
+          marking={this.getDateMarking(day)}
+        >
+          {date}
+        </DayComp>
+      </View>
     );
   }
 
-  onDayChange(day) {
-    const newDate = parseDate(day);
-    const withAnimation = dateutils.sameMonth(newDate, this.state.selectedDay);
-    this.calendar.scrollToDay(day, this.calendarOffset(), withAnimation);
-    this.setState({
-      selectedDay: parseDate(day)
-    });
+  getDayComponent() {
+    if (this.props.dayComponent) {
+      return this.props.dayComponent;
+    }
 
-    if (this.props.onDayChange) {
-      this.props.onDayChange(xdateToData(newDate));
+    switch (this.props.markingType) {
+    case 'period':
+      return UnitDay;
+    case 'multi-dot':
+      return MultiDotDay;
+    case 'multi-period':
+      return MultiPeriodDay;
+    case 'custom':
+      return SingleDay;
+    default:
+      return Day;
     }
   }
 
-  generateMarkings() {
-    let markings = this.props.markedDates;
-    if (!markings) {
-      markings = {};
-      Object.keys(this.props.items  || {}).forEach(key => {
-        if (this.props.items[key] && this.props.items[key].length) {
-          markings[key] = {marked: true};
-        }
-      });
+  getDateMarking(day) {
+    if (!this.props.markedDates) {
+      return false;
     }
-    const key = this.state.selectedDay.toString('yyyy-MM-dd');
-    return {...markings, [key]: {...(markings[key] || {}), ...{selected: true}}};
+    const dates = this.props.markedDates[day.toString('yyyy-MM-dd')] || EmptyArray;
+    if (dates.length || dates) {
+      return dates;
+    } else {
+      return false;
+    }
+  }
+
+  renderWeekNumber (weekNumber) {
+    return <Day key={`week-${weekNumber}`} theme={this.props.theme} marking={{disableTouchEvent: true}} state='disabled'>{weekNumber}</Day>;
+  }
+
+  renderWeek(days, id) {
+    const week = [];
+    days.forEach((day, id2) => {
+      week.push(this.renderDay(day, id2));
+    }, this);
+
+    if (this.props.showWeekNumbers) {
+      week.unshift(this.renderWeekNumber(days[days.length - 1].getWeek()));
+    }
+
+    return (<View style={this.style.week} key={id}>{week}</View>);
   }
 
   render() {
-    const agendaHeight = Math.max(0, this.viewHeight - HEADER_HEIGHT);
-    const weekDaysNames = dateutils.weekDayNames(this.props.firstDay);
-    const weekdaysStyle = [this.styles.weekdays, {
-      opacity: this.state.scrollY.interpolate({
-        inputRange: [agendaHeight - HEADER_HEIGHT, agendaHeight],
-        outputRange: [0, 1],
-        extrapolate: 'clamp',
-      }),
-      transform: [{ translateY: this.state.scrollY.interpolate({
-          inputRange: [Math.max(0, agendaHeight - HEADER_HEIGHT), agendaHeight],
-          outputRange: [-HEADER_HEIGHT, 0],
-          extrapolate: 'clamp',
-        })}]
-    }];
-
-    const headerTranslate = this.state.scrollY.interpolate({
-      inputRange: [0, agendaHeight],
-      outputRange: [agendaHeight, 0],
-      extrapolate: 'clamp',
-    });
-
-    const contentTranslate = this.state.scrollY.interpolate({
-      inputRange: [0, agendaHeight],
-      outputRange: [0, agendaHeight/2],
-      extrapolate: 'clamp',
-    });
-
-    const headerStyle = [
-      this.styles.header,
-      { bottom: agendaHeight, transform: [{ translateY: headerTranslate }] },
-    ];
-
-    if (!this.state.calendarIsReady) {
-      // limit header height until everything is setup for calendar dragging
-      headerStyle.push({height: 0});
-      // fill header with appStyle.calendarBackground background to reduce flickering
-      weekdaysStyle.push({height: HEADER_HEIGHT});
+    const days = dateutils.page(this.state.currentMonth, this.props.firstDay);
+    const weeks = [];
+    while (days.length) {
+      weeks.push(this.renderWeek(days.splice(0, 7), weeks.length));
     }
-
-    const shouldAllowDragging = !this.props.hideKnob && !this.state.calendarScrollable;
-    const scrollPadPosition = (shouldAllowDragging ? HEADER_HEIGHT  : 0) - KNOB_HEIGHT;
-
-    const scrollPadStyle = {
-      position: 'absolute',
-      width: 80,
-      height: KNOB_HEIGHT,
-      top: scrollPadPosition,
-      left: (this.viewWidth - 80) / 2,
-    };
-
-    let knob = (<View style={this.styles.knobContainer}/>);
-
-    if (!this.props.hideKnob) {
-      const knobView = this.props.renderKnob ? this.props.renderKnob() : (<View style={this.styles.knob}/>);
-      knob = this.state.calendarScrollable ? null : (
-          <View style={this.styles.knobContainer}>
-            <View ref={(c) => this.knob = c}>{knobView}</View>
-          </View>
-      );
+    let indicator;
+    const current = parseDate(this.props.current);
+    if (current) {
+      const lastMonthOfDay = current.clone().addMonths(1, true).setDate(1).addDays(-1).toString('yyyy-MM-dd');
+      if (this.props.displayLoadingIndicator &&
+          !(this.props.markedDates && this.props.markedDates[lastMonthOfDay])) {
+        indicator = true;
+      }
     }
-
-    const {isFocused} = this.props;
-
     return (
-        <View onLayout={isFocused ? this.onLayout : null} style={[this.props.style, {flex: 1, overflow: 'hidden'}]}>
-          <View style={this.styles.reservations}>
-            {this.props.renderComponent}
-          </View>
-          <Animated.View style={headerStyle}>
-            <Animated.View style={{flex:1, transform: [{ translateY: contentTranslate }]}}>
-              <CalendarList
-                  onLayout={() => {
-                    this.calendar.scrollToDay(this.state.selectedDay.clone(), this.calendarOffset(), false);
-                  }}
-                  calendarWidth={this.viewWidth}
-                  theme={this.props.theme}
-                  onVisibleMonthsChange={this.onVisibleMonthsChange.bind(this)}
-                  ref={(c) => this.calendar = c}
-                  minDate={this.props.minDate}
-                  maxDate={this.props.maxDate}
-                  current={this.currentMonth}
-                  markedDates={this.generateMarkings()}
-                  markingType={this.props.markingType}
-                  removeClippedSubviews={this.props.removeClippedSubviews}
-                  onDayPress={this._chooseDayFromCalendar.bind(this)}
-                  scrollingEnabled={this.state.calendarScrollable}
-                  hideExtraDays={this.state.calendarScrollable}
-                  firstDay={this.props.firstDay}
-                  monthFormat={this.props.monthFormat}
-                  pastScrollRange={this.props.pastScrollRange}
-                  futureScrollRange={this.props.futureScrollRange}
-                  dayComponent={this.props.dayComponent}
-                  disabledByDefault={this.props.disabledByDefault}
-                  displayLoadingIndicator={this.props.displayLoadingIndicator}
-                  showWeekNumbers={this.props.showWeekNumbers}
-              />
-            </Animated.View>
-            {knob}
-          </Animated.View>
-          <Animated.View style={weekdaysStyle}>
-            {this.props.showWeekNumbers && <Text allowFontScaling={false} style={this.styles.weekday} numberOfLines={1}></Text>}
-            {weekDaysNames.map((day, index) => (
-                <Text allowFontScaling={false} key={day+index} style={this.styles.weekday} numberOfLines={1}>{day}</Text>
-            ))}
-          </Animated.View>
-          <Animated.ScrollView
-              ref={c => this.scrollPad = c}
-              overScrollMode='never'
-              showsHorizontalScrollIndicator={false}
-              showsVerticalScrollIndicator={false}
-              style={scrollPadStyle}
-              scrollEventThrottle={1}
-              scrollsToTop={false}
-              onTouchStart={this.onTouchStart}
-              onTouchEnd={this.onTouchEnd}
-              onScrollBeginDrag={this.onStartDrag}
-              onScrollEndDrag={this.onSnapAfterDrag}
-              onScroll={Animated.event(
-                  [{ nativeEvent: { contentOffset: { y: this.state.scrollY } } }],
-                  { useNativeDriver: true },
-              )}
-          >
-            <View style={{height: agendaHeight + KNOB_HEIGHT}} onLayout={this.onScrollPadLayout} />
-          </Animated.ScrollView>
-        </View>
-    );
+      <View style={[this.style.container, this.props.style]}>
+        <CalendarHeader
+          theme={this.props.theme}
+          hideArrows={this.props.hideArrows}
+          month={this.state.currentMonth}
+          addMonth={this.addMonth}
+          showIndicator={indicator}
+          firstDay={this.props.firstDay}
+          renderArrow={this.props.renderArrow}
+          monthFormat={this.props.monthFormat}
+          hideDayNames={this.props.hideDayNames}
+          weekNumbers={this.props.showWeekNumbers}
+          onPressArrowLeft={this.props.onPressArrowLeft}
+          onPressArrowRight={this.props.onPressArrowRight}
+        />
+        <View style={this.style.monthView}>{weeks}</View>
+      </View>);
   }
 }
+
+export default Calendar;
